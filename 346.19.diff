@@ -1,0 +1,120 @@
+diff -ur a/kernel/nvidia/nv.c b/kernel/nvidia/nv.c
+--- a/kernel/nvidia/nv.c	2016-04-19 23:32:13.000000000 +0300
++++ b/kernel/nvidia/nv.c	2016-05-20 03:49:24.037043140 +0300
+@@ -32,7 +32,7 @@
+ 
+ #if (NV_BUILD_MODULE_INSTANCES != 0)
+ #if defined(MODULE_LICENSE)
+-MODULE_LICENSE("NVIDIA");
++MODULE_LICENSE("GPL v2");
+ #endif
+ #if defined(MODULE_INFO)
+ MODULE_INFO(supported, "external");
+diff -ur a/kernel/nvidia/nv-frontend.c b/kernel/nvidia/nv-frontend.c
+--- a/kernel/nvidia/nv-frontend.c	2016-04-19 23:32:13.000000000 +0300
++++ b/kernel/nvidia/nv-frontend.c	2016-05-20 03:49:58.695777701 +0300
+@@ -15,7 +15,7 @@
+ #include "nv-frontend.h"
+ 
+ #if defined(MODULE_LICENSE)
+-MODULE_LICENSE("NVIDIA");
++MODULE_LICENSE("GPL v2");
+ #endif
+ #if defined(MODULE_INFO)
+ MODULE_INFO(supported, "external");
+diff -ur a/kernel/nvidia-drm/nvidia-drm-fb.c b/kernel/nvidia-drm/nvidia-drm-fb.c
+--- a/kernel/nvidia-drm/nvidia-drm-fb.c	2016-04-19 23:31:08.000000000 +0300
++++ b/kernel/nvidia-drm/nvidia-drm-fb.c	2016-05-17 13:43:52.178573470 +0300
+@@ -77,7 +77,7 @@
+ static struct drm_framebuffer *internal_framebuffer_create
+ (
+     struct drm_device *dev,
+-    struct drm_file *file, struct drm_mode_fb_cmd2 *cmd,
++    struct drm_file *file, const struct drm_mode_fb_cmd2 *cmd,
+     uint64_t nvkms_params_ptr,
+     uint64_t nvkms_params_size
+ )
+@@ -199,7 +199,7 @@
+ struct drm_framebuffer *nvidia_drm_framebuffer_create
+ (
+     struct drm_device *dev,
+-    struct drm_file *file, struct drm_mode_fb_cmd2 *cmd
++    struct drm_file *file, const struct drm_mode_fb_cmd2 *cmd
+ )
+ {
+     return internal_framebuffer_create(dev, file, cmd, 0, 0);
+diff -ur a/kernel/nvidia-drm/nvidia-drm-fb.h b/kernel/nvidia-drm/nvidia-drm-fb.h
+--- a/kernel/nvidia-drm/nvidia-drm-fb.h	2016-04-19 23:31:08.000000000 +0300
++++ b/kernel/nvidia-drm/nvidia-drm-fb.h	2016-05-17 13:43:52.197568392 +0300
+@@ -45,7 +45,7 @@
+ struct drm_framebuffer *nvidia_drm_framebuffer_create
+ (
+     struct drm_device *dev,
+-    struct drm_file *file, struct drm_mode_fb_cmd2 *cmd
++    struct drm_file *file, const struct drm_mode_fb_cmd2 *cmd
+ );
+ 
+ int nvidia_drm_add_nvkms_fb(
+diff -ur a/kernel/nvidia-drm/nvidia-drm-linux.c b/kernel/nvidia-drm/nvidia-drm-linux.c
+--- a/kernel/nvidia-drm/nvidia-drm-linux.c	2016-04-19 23:31:08.000000000 +0300
++++ b/kernel/nvidia-drm/nvidia-drm-linux.c	2016-05-20 03:51:12.097155056 +0300
+@@ -31,6 +31,7 @@
+ 
+ #if defined(NV_DRM_AVAILABLE)
+ 
++#include "nv-mm.h"
+ #include "nv-pgprot.h"
+ 
+ MODULE_PARM_DESC(
+@@ -121,8 +122,7 @@
+ 
+     down_read(&mm->mmap_sem);
+ 
+-    pages_pinned = get_user_pages(current, mm,
+-                                  address, pages_count, write, force,
++    pages_pinned = NV_GET_USER_PAGES(address, pages_count, write, force,
+                                   user_pages, NULL);
+     up_read(&mm->mmap_sem);
+ 
+@@ -206,7 +206,7 @@
+ module_exit(nv_linux_drm_exit);
+ 
+ #if defined(MODULE_LICENSE)
+-  MODULE_LICENSE("MIT");
++  MODULE_LICENSE("GPL v2");
+ #endif
+ #if defined(MODULE_INFO)
+   MODULE_INFO(supported, "external");
+diff -ur a/kernel/nvidia-modeset/nvidia-modeset-linux.c b/kernel/nvidia-modeset/nvidia-modeset-linux.c
+--- a/kernel/nvidia-modeset/nvidia-modeset-linux.c	2016-04-19 23:31:08.000000000 +0300
++++ b/kernel/nvidia-modeset/nvidia-modeset-linux.c	2016-05-20 03:51:30.579214183 +0300
+@@ -1231,7 +1231,7 @@
+ module_exit(nvkms_exit);
+ 
+ #if defined(MODULE_LICENSE)
+-  MODULE_LICENSE("NVIDIA");
++  MODULE_LICENSE("GPL v2");
+ #endif
+ #if defined(MODULE_INFO)
+   MODULE_INFO(supported, "external");
+diff -ur a/kernel/nvidia-uvm/uvm_common.c b/kernel/nvidia-uvm/uvm_common.c
+--- a/kernel/nvidia-uvm/uvm_common.c	2016-04-19 23:33:14.000000000 +0300
++++ b/kernel/nvidia-uvm/uvm_common.c	2016-05-20 03:50:55.766520781 +0300
+@@ -514,5 +514,5 @@
+ MODULE_PARM_DESC(uvm_enable_builtin_tests,
+                  "Enable the UVM built-in tests. (This is a security risk)");
+ 
+-MODULE_LICENSE("MIT");
++MODULE_LICENSE("GPL v2");
+ MODULE_INFO(supported, "external");
+diff -ur a/kernel/nvidia-uvm/uvm_unsupported.c b/kernel/nvidia-uvm/uvm_unsupported.c
+--- a/kernel/nvidia-uvm/uvm_unsupported.c	2016-04-19 23:33:14.000000000 +0300
++++ b/kernel/nvidia-uvm/uvm_unsupported.c	2016-05-20 03:50:35.843846779 +0300
+@@ -164,6 +164,6 @@
+ module_init(uvm_unsupported_module_init);
+ module_exit(uvm_unsupported_exit);
+ 
+-MODULE_LICENSE("MIT");
++MODULE_LICENSE("GPL v2");
+ MODULE_INFO(supported, "external");
+ 

@@ -1,0 +1,24 @@
+--- nv-procfs.c	2013-04-22 04:04:24.000000000 +0400
++++ nv-procfs.c	2013-05-04 01:42:01.577000000 +0400
+@@ -51,10 +51,10 @@
+ #define NV_SET_PROC_ENTRY_OWNER(entry)
+ #endif
+ 
+-#define NV_CREATE_PROC_ENTRY(name,mode,parent)            \
++#define NV_CREATE_PROC_ENTRY(name,mode,parent, fops)            \
+    ({                                                     \
+         struct proc_dir_entry *__entry;                   \
+-        __entry = create_proc_entry(name, mode, parent);  \
++        __entry = proc_create(name, mode, parent, &fops);  \
+         if (__entry != NULL)                              \
+             NV_SET_PROC_ENTRY_OWNER(__entry);             \
+         __entry;                                          \
+@@ -470,7 +470,7 @@
+ )
+ {
+     NV_CREATE_PROC_FILE(filename, parent,
+-            nv_procfs_read_text_file, NULL, NULL, (void *)text);
++            nv_procfs_read_text_file, NULL, NULL, (void *)text, nv_procfs_registry_fops);
+ }
+ 
+ static void nv_procfs_unregister_all(struct proc_dir_entry *entry)

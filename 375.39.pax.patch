@@ -1,0 +1,964 @@
+diff -ur NVIDIA-Linux-x86_64-375.39/kernel/common/inc/nv-linux.h 375.39-pax/kernel/common/inc/nv-linux.h
+--- NVIDIA-Linux-x86_64-375.39/kernel/common/inc/nv-linux.h	2017-02-01 05:50:37.000000000 +0300
++++ 375.39-pax/kernel/common/inc/nv-linux.h	2017-03-23 15:54:38.655563984 +0300
+@@ -642,7 +642,7 @@
+ #  define KM_FREE_RECORD(a,b,c)
+ #endif
+ 
+-static inline void *nv_vmalloc(unsigned long size)
++static inline void *nv_vmalloc(NvU32 size)
+ {
+     void *ptr = __vmalloc(size, GFP_KERNEL, PAGE_KERNEL);
+     VM_ALLOC_RECORD(ptr, size, "vm_vmalloc");
+@@ -1310,7 +1310,8 @@
+ #if (NV_KMEM_CACHE_CREATE_ARGUMENT_COUNT == 5)
+ #define NV_KMEM_CACHE_CREATE_FULL(name, size, align, flags, ctor) \
+     kmem_cache_create(name, size, align, flags, ctor)
+-
++#define NV_KMEM_CACHE_CREATE_FULL_USERCOPY(name, size, align, flags, useroffset, usersize, ctor) \
++    kmem_cache_create_usercopy(name, size, align, flags, useroffset, usersize, ctor)
+ #else
+ #define NV_KMEM_CACHE_CREATE_FULL(name, size, align, flags, ctor) \
+     kmem_cache_create(name, size, align, flags, ctor, NULL)
+@@ -1319,6 +1320,14 @@
+ #define NV_KMEM_CACHE_CREATE(name, type)    \
+     NV_KMEM_CACHE_CREATE_FULL(name, sizeof(type), 0, 0, NULL)
+ 
++#ifdef SLAB_USERCOPY
++#define NV_KMEM_CACHE_CREATE_USERCOPY(name, type)    \
++    NV_KMEM_CACHE_CREATE_FULL(name, sizeof(type), 0, SLAB_USERCOPY, NULL)
++#else
++#define NV_KMEM_CACHE_CREATE_USERCOPY(name, type)    \
++    NV_KMEM_CACHE_CREATE_FULL_USERCOPY(name, sizeof(type), 0, 0, 0, sizeof(type), NULL)
++#endif
++
+ #define NV_KMEM_CACHE_DESTROY(kmem_cache)   \
+     kmem_cache_destroy(kmem_cache)
+ 
+diff -ur NVIDIA-Linux-x86_64-375.39/kernel/common/inc/nv-modeset-interface.h 375.39-pax/kernel/common/inc/nv-modeset-interface.h
+--- NVIDIA-Linux-x86_64-375.39/kernel/common/inc/nv-modeset-interface.h	2017-02-01 05:50:37.000000000 +0300
++++ 375.39-pax/kernel/common/inc/nv-modeset-interface.h	2017-03-23 15:54:38.655563984 +0300
+@@ -72,7 +72,7 @@
+      * mix nvidia and nvidia-modeset kernel modules from different
+      * releases.
+      */
+-    const char *version_string;
++//    const char *version_string;
+ 
+     /*
+      * Return system information.
+@@ -117,6 +117,6 @@
+ 
+ } nvidia_modeset_rm_ops_t;
+ 
+-NV_STATUS nvidia_get_rm_ops(nvidia_modeset_rm_ops_t *rm_ops);
++NV_STATUS nvidia_get_rm_ops(const nvidia_modeset_rm_ops_t **rm_ops, const char **version_string);
+ 
+ #endif /* _NV_MODESET_INTERFACE_H_ */
+diff -ur NVIDIA-Linux-x86_64-375.39/kernel/common/inc/nv-register-module.h 375.39-pax/kernel/common/inc/nv-register-module.h
+--- NVIDIA-Linux-x86_64-375.39/kernel/common/inc/nv-register-module.h	2017-02-01 05:50:37.000000000 +0300
++++ 375.39-pax/kernel/common/inc/nv-register-module.h	2017-03-23 15:54:38.656563704 +0300
+@@ -34,7 +34,7 @@
+     int (*ioctl)(struct inode *, struct file * file, unsigned int cmd, unsigned long arg);
+     unsigned int (*poll)(struct file * file, poll_table *wait);
+ 
+-} nvidia_module_t;
++} __do_const nvidia_module_t;
+ 
+ int nvidia_register_module(nvidia_module_t *);
+ int nvidia_unregister_module(nvidia_module_t *);
+diff -ur NVIDIA-Linux-x86_64-375.39/kernel/nvidia/nv-acpi.c 375.39-pax/kernel/nvidia/nv-acpi.c
+--- NVIDIA-Linux-x86_64-375.39/kernel/nvidia/nv-acpi.c	2017-02-01 05:50:37.000000000 +0300
++++ 375.39-pax/kernel/nvidia/nv-acpi.c	2017-03-23 05:44:04.000000000 +0300
+@@ -1521,21 +1521,25 @@
+ 
+ int nv_acpi_init(void)
+ {
++    barrier();
+     return 0;
+ }
+ 
+ int nv_acpi_uninit(void)
+ {
++    barrier();
+     return 0;
+ }
+ 
+ void NV_API_CALL nv_acpi_methods_init(NvU32 *handlePresent)
+ {
+     *handlePresent = 0;
++    barrier();
+ }
+ 
+ void NV_API_CALL nv_acpi_methods_uninit(void)
+ {
++    barrier();
+     return;
+ }
+ 
+diff -ur NVIDIA-Linux-x86_64-375.39/kernel/nvidia/nv.c 375.39-pax/kernel/nvidia/nv.c
+--- NVIDIA-Linux-x86_64-375.39/kernel/nvidia/nv.c	2017-02-01 05:50:37.000000000 +0300
++++ 375.39-pax/kernel/nvidia/nv.c	2017-03-23 15:54:38.657563425 +0300
+@@ -37,7 +37,7 @@
+ 
+ #if (NV_BUILD_MODULE_INSTANCES != 0)
+ #if defined(MODULE_LICENSE)
+-MODULE_LICENSE("NVIDIA");
++MODULE_LICENSE("GPLv2");
+ #endif
+ #if defined(MODULE_INFO)
+ MODULE_INFO(supported, "external");
+@@ -666,7 +666,7 @@
+     NV_SPIN_LOCK_INIT(&km_lock);
+ #endif
+ 
+-    nvidia_stack_t_cache = NV_KMEM_CACHE_CREATE(nvidia_stack_cache_name,
++    nvidia_stack_t_cache = NV_KMEM_CACHE_CREATE_USERCOPY(nvidia_stack_cache_name,
+                                                 nvidia_stack_t);
+     if (nvidia_stack_t_cache == NULL)
+     {
+diff -ur NVIDIA-Linux-x86_64-375.39/kernel/nvidia/nv-chrdev.c 375.39-pax/kernel/nvidia/nv-chrdev.c
+--- NVIDIA-Linux-x86_64-375.39/kernel/nvidia/nv-chrdev.c	2017-02-01 05:50:37.000000000 +0300
++++ 375.39-pax/kernel/nvidia/nv-chrdev.c	2017-03-23 15:54:38.658563145 +0300
+@@ -20,8 +20,6 @@
+ {
+     nvidia_module_t *module = (nvidia_module_t *)param;
+ 
+-    module->instance = nv_module_instance;
+-
+     return (nvidia_register_module(module));
+ }
+ 
+diff -ur NVIDIA-Linux-x86_64-375.39/kernel/nvidia/nv-frontend.c 375.39-pax/kernel/nvidia/nv-frontend.c
+--- NVIDIA-Linux-x86_64-375.39/kernel/nvidia/nv-frontend.c	2017-02-01 05:50:37.000000000 +0300
++++ 375.39-pax/kernel/nvidia/nv-frontend.c	2017-03-23 05:43:38.000000000 +0300
+@@ -15,7 +15,7 @@
+ #include "nv-frontend.h"
+ 
+ #if defined(MODULE_LICENSE)
+-MODULE_LICENSE("NVIDIA");
++MODULE_LICENSE("GPLv2");
+ #endif
+ #if defined(MODULE_INFO)
+ MODULE_INFO(supported, "external");
+diff -ur NVIDIA-Linux-x86_64-375.39/kernel/nvidia/nv-instance.c 375.39-pax/kernel/nvidia/nv-instance.c
+--- NVIDIA-Linux-x86_64-375.39/kernel/nvidia/nv-instance.c	2017-02-01 05:50:37.000000000 +0300
++++ 375.39-pax/kernel/nvidia/nv-instance.c	2017-03-23 15:54:38.658563145 +0300
+@@ -51,6 +51,7 @@
+ nvidia_module_t nv_fops = {
+     .owner       = THIS_MODULE,
+     .module_name = MODULE_NAME,
++    .instance    = MODULE_INSTANCE_NUMBER,
+     .open        = nvidia_open,
+     .close       = nvidia_close,
+     .ioctl       = nvidia_ioctl,
+diff -ur NVIDIA-Linux-x86_64-375.39/kernel/nvidia/nv-mmap.c 375.39-pax/kernel/nvidia/nv-mmap.c
+--- NVIDIA-Linux-x86_64-375.39/kernel/nvidia/nv-mmap.c	2017-02-01 05:50:37.000000000 +0300
++++ 375.39-pax/kernel/nvidia/nv-mmap.c	2017-03-23 15:54:38.658563145 +0300
+@@ -102,12 +102,12 @@
+ }
+ 
+ #if defined(NV_VM_OPERATIONS_STRUCT_HAS_ACCESS)
+-static int
++static ssize_t
+ nvidia_vma_access(
+     struct vm_area_struct *vma,
+     unsigned long addr,
+     void *buffer,
+-    int length,
++    size_t length,
+     int write
+ )
+ {
+diff -ur NVIDIA-Linux-x86_64-375.39/kernel/nvidia/nv-modeset-interface.c 375.39-pax/kernel/nvidia/nv-modeset-interface.c
+--- NVIDIA-Linux-x86_64-375.39/kernel/nvidia/nv-modeset-interface.c	2017-02-01 05:50:37.000000000 +0300
++++ 375.39-pax/kernel/nvidia/nv-modeset-interface.c	2017-03-23 15:54:38.659562865 +0300
+@@ -100,10 +100,9 @@
+     return count;
+ }
+ 
+-NV_STATUS nvidia_get_rm_ops(nvidia_modeset_rm_ops_t *rm_ops)
++NV_STATUS nvidia_get_rm_ops(const nvidia_modeset_rm_ops_t **rm_ops, const char **version_string)
+ {
+-    const nvidia_modeset_rm_ops_t local_rm_ops = {
+-        .version_string = NV_VERSION_STRING,
++    static const nvidia_modeset_rm_ops_t local_rm_ops = {
+         .system_info    = {
+             .allow_write_combining = NV_FALSE,
+         },
+@@ -116,17 +115,26 @@
+         .set_callbacks  = nvidia_modeset_set_callbacks,
+     };
+ 
+-    if (strcmp(rm_ops->version_string, NV_VERSION_STRING) != 0)
++    static const nvidia_modeset_rm_ops_t local_rm_ops_wc = {
++        .system_info    = {
++            .allow_write_combining = NV_TRUE,
++        },
++        .alloc_stack    = nvidia_modeset_rm_ops_alloc_stack,
++        .free_stack     = nvidia_modeset_rm_ops_free_stack,
++        .enumerate_gpus = nvidia_modeset_enumerate_gpus,
++        .open_gpu       = nvidia_dev_get,
++        .close_gpu      = nvidia_dev_put,
++        .op             = rm_kernel_rmapi_op, /* provided by nv-kernel.o */
++        .set_callbacks  = nvidia_modeset_set_callbacks,
++    };
++
++    if (strcmp(*version_string, NV_VERSION_STRING) != 0)
+     {
+-        rm_ops->version_string = NV_VERSION_STRING;
++        *version_string = NV_VERSION_STRING;
+         return NV_ERR_GENERIC;
+     }
+ 
+-    *rm_ops = local_rm_ops;
+-
+-    if (NV_ALLOW_WRITE_COMBINING(NV_MEMORY_TYPE_FRAMEBUFFER)) {
+-        rm_ops->system_info.allow_write_combining = NV_TRUE;
+-    }
++    *rm_ops = NV_ALLOW_WRITE_COMBINING(NV_MEMORY_TYPE_FRAMEBUFFER) ? &local_rm_ops_wc : &local_rm_ops;
+ 
+     return NV_OK;
+ }
+diff -ur NVIDIA-Linux-x86_64-375.39/kernel/nvidia/nv-p2p.c 375.39-pax/kernel/nvidia/nv-p2p.c
+--- NVIDIA-Linux-x86_64-375.39/kernel/nvidia/nv-p2p.c	2017-02-01 05:50:37.000000000 +0300
++++ 375.39-pax/kernel/nvidia/nv-p2p.c	2017-03-23 05:44:04.000000000 +0300
+@@ -146,7 +146,7 @@
+ int nvidia_p2p_get_pages(
+     uint64_t p2p_token,
+     uint32_t va_space,
+-    uint64_t virtual_address,
++    uint64_t address,
+     uint64_t length,
+     struct nvidia_p2p_page_table **page_table,
+     void (*free_callback)(void * data),
+@@ -211,7 +211,7 @@
+     }
+ 
+     status = rm_p2p_get_pages(sp, p2p_token, va_space,
+-            virtual_address, length, physical_addresses, wreqmb_h,
++            address, length, physical_addresses, wreqmb_h,
+             rreqmb_h, &entries, &gpu_uuid, *page_table,
+             free_callback, data);
+     if (status != NV_OK)
+@@ -286,7 +286,7 @@
+ 
+     if (bGetPages)
+     {
+-        rm_p2p_put_pages(sp, p2p_token, va_space, virtual_address,
++        rm_p2p_put_pages(sp, p2p_token, va_space, address,
+                 gpu_uuid, *page_table);
+     }
+ 
+@@ -329,7 +329,7 @@
+ int nvidia_p2p_put_pages(
+     uint64_t p2p_token,
+     uint32_t va_space,
+-    uint64_t virtual_address,
++    uint64_t address,
+     struct nvidia_p2p_page_table *page_table
+ )
+ {
+@@ -343,7 +343,7 @@
+         return rc;
+     }
+ 
+-    status = rm_p2p_put_pages(sp, p2p_token, va_space, virtual_address,
++    status = rm_p2p_put_pages(sp, p2p_token, va_space, address,
+             page_table->gpu_uuid, page_table);
+     if (status == NV_OK)
+         nvidia_p2p_free_page_table(page_table);
+diff -ur NVIDIA-Linux-x86_64-375.39/kernel/nvidia-drm/nvidia-drm-drv.c 375.39-pax/kernel/nvidia-drm/nvidia-drm-drv.c
+--- NVIDIA-Linux-x86_64-375.39/kernel/nvidia-drm/nvidia-drm-drv.c	2017-02-01 05:47:52.000000000 +0300
++++ 375.39-pax/kernel/nvidia-drm/nvidia-drm-drv.c	2017-03-23 15:54:38.659562865 +0300
+@@ -594,7 +594,7 @@
+                       DRM_CONTROL_ALLOW|DRM_RENDER_ALLOW|DRM_UNLOCKED),
+ };
+ 
+-static struct drm_driver nv_drm_driver = {
++static drm_driver_no_const nv_drm_driver __read_only = {
+ 
+     .driver_features        = DRIVER_GEM | DRIVER_PRIME | DRIVER_RENDER,
+ 
+@@ -654,6 +654,7 @@
+         return;
+     }
+ 
++    pax_open_kernel();
+     nv_drm_driver.driver_features |= DRIVER_MODESET | DRIVER_ATOMIC;
+ 
+     nv_drm_driver.master_set       = nvidia_drm_master_set;
+@@ -664,6 +665,7 @@
+     nv_drm_driver.dumb_destroy     = drm_gem_dumb_destroy;
+ 
+     nv_drm_driver.gem_vm_ops       = &nv_drm_gem_vma_ops;
++    pax_close_kernel();
+ #endif /* NV_DRM_ATOMIC_MODESET_AVAILABLE */
+ }
+ 
+diff -ur NVIDIA-Linux-x86_64-375.39/kernel/nvidia-drm/nvidia-drm-fence.c 375.39-pax/kernel/nvidia-drm/nvidia-drm-fence.c
+--- NVIDIA-Linux-x86_64-375.39/kernel/nvidia-drm/nvidia-drm-fence.c	2017-02-01 05:47:52.000000000 +0300
++++ 375.39-pax/kernel/nvidia-drm/nvidia-drm-fence.c	2017-03-23 16:15:51.430058763 +0300
+@@ -31,7 +31,11 @@
+ 
+ #if defined(NV_DRM_DRIVER_HAS_GEM_PRIME_RES_OBJ)
+ struct nv_fence {
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
++    struct dma_fence base;
++#else
+     struct fence base;
++#endif
+     spinlock_t lock;
+ 
+     struct nvidia_drm_device *nv_dev;
+@@ -51,7 +55,12 @@
+ 
+ static const char *nvidia_drm_gem_prime_fence_op_get_driver_name
+ (
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
++    struct dma_fence *fence
++#else
+     struct fence *fence
++#endif
++
+ )
+ {
+     return "NVIDIA";
+@@ -59,7 +68,11 @@
+ 
+ static const char *nvidia_drm_gem_prime_fence_op_get_timeline_name
+ (
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
++    struct dma_fence *fence
++#else
+     struct fence *fence
++#endif
+ )
+ {
+     return "nvidia.prime";
+@@ -67,7 +80,11 @@
+ 
+ static bool nvidia_drm_gem_prime_fence_op_signaled
+ (
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
++    struct dma_fence *fence
++#else
+     struct fence *fence
++#endif
+ )
+ {
+     struct nv_fence *nv_fence = container_of(fence, struct nv_fence, base);
+@@ -99,7 +116,11 @@
+ 
+ static bool nvidia_drm_gem_prime_fence_op_enable_signaling
+ (
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
++    struct dma_fence *fence
++#else
+     struct fence *fence
++#endif
+ )
+ {
+     bool ret = true;
+@@ -107,7 +128,11 @@
+     struct nvidia_drm_gem_object *nv_gem = nv_fence->nv_gem;
+     struct nvidia_drm_device *nv_dev = nv_fence->nv_dev;
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
++    if (dma_fence_is_signaled(fence))
++#else
+     if (fence_is_signaled(fence))
++#endif
+     {
+         return false;
+     }
+@@ -119,10 +144,6 @@
+ 
+     mutex_lock(&nv_dev->dev->struct_mutex);
+ 
+-    if (fence == nv_gem->fenceContext.softFence) { /* Already enabled */
+-        goto unlock_struct_mutex;
+-    }
+-
+     WARN_ON(nv_gem->fenceContext.softFence != NULL);
+ 
+     if (!nvKms->enableChannelEvent(nv_dev->pDevice, nv_gem->fenceContext.cb))
+@@ -136,7 +157,11 @@
+     }
+ 
+     nv_gem->fenceContext.softFence = fence;
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
++    dma_fence_get(fence);
++#else
+     fence_get(fence);
++#endif
+ 
+ unlock_struct_mutex:
+     mutex_unlock(&nv_dev->dev->struct_mutex);
+@@ -146,7 +171,11 @@
+ 
+ static void nvidia_drm_gem_prime_fence_op_release
+ (
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
++    struct dma_fence *fence
++#else
+     struct fence *fence
++#endif
+ )
+ {
+     struct nv_fence *nv_fence = container_of(fence, struct nv_fence, base);
+@@ -155,7 +184,11 @@
+ 
+ static signed long nvidia_drm_gem_prime_fence_op_wait
+ (
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
++    struct dma_fence *fence,
++#else
+     struct fence *fence,
++#endif
+     bool intr,
+     signed long timeout
+ )
+@@ -170,12 +203,22 @@
+      * that it should never get hit during normal operation, but not so long
+      * that the system becomes unresponsive.
+      */
+-    return fence_default_wait(fence, intr,
+-                              (timeout == MAX_SCHEDULE_TIMEOUT) ?
+-                                  msecs_to_jiffies(96) : timeout);
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
++     return dma_fence_default_wait(fence, intr,
++                                 (timeout == MAX_SCHEDULE_TIMEOUT) ?
++                                   msecs_to_jiffies(96) : timeout);
++#else
++     return fence_default_wait(fence, intr,
++                                 (timeout == MAX_SCHEDULE_TIMEOUT) ?
++                                   msecs_to_jiffies(96) : timeout);
++#endif
+ }
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
++static const struct dma_fence_ops nvidia_drm_gem_prime_fence_ops = {
++#else
+ static const struct fence_ops nvidia_drm_gem_prime_fence_ops = {
++#endif
+     .get_driver_name = nvidia_drm_gem_prime_fence_op_get_driver_name,
+     .get_timeline_name = nvidia_drm_gem_prime_fence_op_get_timeline_name,
+     .signaled = nvidia_drm_gem_prime_fence_op_signaled,
+@@ -285,8 +328,11 @@
+     bool force
+ )
+ {
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
++    struct dma_fence *fence = nv_gem->fenceContext.softFence;
++#else
+     struct fence *fence = nv_gem->fenceContext.softFence;
+-
++#endif
+     WARN_ON(!mutex_is_locked(&nv_dev->dev->struct_mutex));
+ 
+     /*
+@@ -301,11 +347,17 @@
+ 
+         if (force || nv_fence_ready_to_signal(nv_fence))
+         {
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
++            dma_fence_signal(&nv_fence->base);
++#else
+             fence_signal(&nv_fence->base);
+-
++#endif
+             nv_gem->fenceContext.softFence = NULL;
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
++            dma_fence_put(&nv_fence->base);
++#else
+             fence_put(&nv_fence->base);
+-
++#endif
+             nvKms->disableChannelEvent(nv_dev->pDevice,
+                                        nv_gem->fenceContext.cb);
+         }
+@@ -319,8 +371,11 @@
+             return;
+ 
+         nv_fence = container_of(fence, struct nv_fence, base);
+-
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
++        dma_fence_signal(&nv_fence->base);
++#else
+         fence_signal(&nv_fence->base);
++#endif
+     }
+ }
+ 
+@@ -513,7 +568,11 @@
+      * fence_context_alloc() cannot fail, so we do not need to check a return
+      * value.
+      */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
++    nv_gem->fenceContext.context = dma_fence_context_alloc(1);
++#else
+     nv_gem->fenceContext.context = fence_context_alloc(1);
++#endif
+ 
+     ret = nvidia_drm_gem_prime_fence_import_semaphore(
+               nv_dev, nv_gem, p->index,
+@@ -670,17 +729,22 @@
+     nv_fence->nv_gem = nv_gem;
+ 
+     spin_lock_init(&nv_fence->lock);
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
++    dma_fence_init(&nv_fence->base, &nvidia_drm_gem_prime_fence_ops,
++           &nv_fence->lock, nv_gem->fenceContext.context,
++               p->sem_thresh);
++#else
+     fence_init(&nv_fence->base, &nvidia_drm_gem_prime_fence_ops,
+-               &nv_fence->lock, nv_gem->fenceContext.context,
++           &nv_fence->lock, nv_gem->fenceContext.context,
+                p->sem_thresh);
+-
+-    /* We could be replacing an existing exclusive fence; force signal it to
+-     * unblock anyone waiting on it and clean up software signaling. */
+-    nvidia_drm_gem_prime_fence_signal(nv_dev, nv_gem, true);
+-
+-    reservation_object_add_excl_fence(&nv_gem->fenceContext.resv,
++#endif
++        reservation_object_add_excl_fence(&nv_gem->fenceContext.resv,
+                                       &nv_fence->base);
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
++    dma_fence_put(&nv_fence->base); /* Reservation object has reference */
++#else
+     fence_put(&nv_fence->base); /* Reservation object has reference */
++#endif
+ 
+     ret = 0;
+ 
+diff -ur NVIDIA-Linux-x86_64-375.39/kernel/nvidia-drm/nvidia-drm-gem.h 375.39-pax/kernel/nvidia-drm/nvidia-drm-gem.h
+--- NVIDIA-Linux-x86_64-375.39/kernel/nvidia-drm/nvidia-drm-gem.h	2017-02-01 05:47:52.000000000 +0300
++++ 375.39-pax/kernel/nvidia-drm/nvidia-drm-gem.h	2017-03-23 05:44:04.000000000 +0300
+@@ -98,7 +98,7 @@
+         /* Software signaling structures */
+         struct NvKmsKapiChannelEvent *cb;
+         struct nvidia_drm_gem_prime_soft_fence_event_args *cbArgs;
+-        struct fence *softFence; /* Fence for software signaling */
++        struct dma_fence *softFence; /* Fence for software signaling */
+     } fenceContext;
+ #endif
+ };
+diff -ur NVIDIA-Linux-x86_64-375.39/kernel/nvidia-drm/nvidia-drm-linux.c 375.39-pax/kernel/nvidia-drm/nvidia-drm-linux.c
+--- NVIDIA-Linux-x86_64-375.39/kernel/nvidia-drm/nvidia-drm-linux.c	2017-02-01 05:47:52.000000000 +0300
++++ 375.39-pax/kernel/nvidia-drm/nvidia-drm-linux.c	2017-03-23 05:43:38.000000000 +0300
+@@ -196,7 +196,7 @@
+ module_exit(nv_linux_drm_exit);
+ 
+ #if defined(MODULE_LICENSE)
+-  MODULE_LICENSE("MIT");
++  MODULE_LICENSE("GPLv2");
+ #endif
+ #if defined(MODULE_INFO)
+   MODULE_INFO(supported, "external");
+diff -ur NVIDIA-Linux-x86_64-375.39/kernel/nvidia-drm/nvidia-drm-modeset.c 375.39-pax/kernel/nvidia-drm/nvidia-drm-modeset.c
+--- NVIDIA-Linux-x86_64-375.39/kernel/nvidia-drm/nvidia-drm-modeset.c	2017-03-23 16:18:03.454106123 +0300
++++ 375.39-pax/kernel/nvidia-drm/nvidia-drm-modeset.c	2017-03-23 16:27:47.580613053 +0300
+@@ -37,13 +37,6 @@
+ #include <drm/drm_atomic_helper.h>
+ #include <drm/drm_crtc.h>
+ 
+-static inline void nv_drm_atomic_state_free(struct drm_atomic_state *state) {
+-#if defined(NV_DRM_ATOMIC_STATE_FREE)
+-    drm_atomic_state_free(state);
+-#else
+-    drm_atomic_state_put(state);
+-#endif
+-}
+ 
+ #if defined(NV_DRM_MODE_CONFIG_FUNCS_HAS_ATOMIC_STATE_ALLOC)
+ struct nvidia_drm_atomic_state {
+@@ -59,7 +52,7 @@
+ 
+ struct drm_atomic_state *nvidia_drm_atomic_state_alloc(struct drm_device *dev)
+ {
+-    struct nvidia_drm_atomic_state *nv_state =
++    struct nvidia_drm_atomic_state *nv_state =
+             nvidia_drm_calloc(1, sizeof(*nv_state));
+ 
+     if (nv_state == NULL || drm_atomic_state_init(dev, &nv_state->base) < 0) {
+@@ -77,13 +70,20 @@
+ 
+ void nvidia_drm_atomic_state_free(struct drm_atomic_state *state)
+ {
+-    struct nvidia_drm_atomic_state *nv_state =
+-                    to_nv_atomic_state(state);
++    struct nvidia_drm_atomic_state *nv_state = to_nv_atomic_state(state);
+     drm_atomic_state_default_release(state);
+     nvidia_drm_free(nv_state);
+ }
+ #endif
+ 
++static inline void nv_drm_atomic_state_free(struct drm_atomic_state *state) {
++#if defined(NV_DRM_ATOMIC_STATE_FREE)
++    drm_atomic_state_free(state);
++#else
++    drm_atomic_state_put(state);
++#endif
++}
++
+ /*
+  * In kernel versions before the addition of
+  * drm_crtc_state::connectors_changed, connector changes were
+@@ -653,7 +653,7 @@
+ 
+     wake_up_all(&nv_dev->pending_commit_queue);
+ 
+-    nv_drm_atomic_state_free(state);
++    drm_atomic_state_free(state);
+ 
+ #if !defined(NV_DRM_MODE_CONFIG_FUNCS_HAS_ATOMIC_STATE_ALLOC)
+     nvidia_drm_free(requested_config);
+@@ -961,7 +961,6 @@
+ #else
+         memset(&crtc_state->mode, 0, sizeof(crtc_state->mode));
+ #endif
+-
+         crtc_state->active = crtc_state->enable = false;
+     }
+ 
+@@ -991,7 +990,10 @@
+      * drm_atomic_commit().
+      */
+     if (ret != 0) {
+-        nv_drm_atomic_state_free(state);
++	if (state) {
++        	nv_drm_atomic_state_free(state);
++                state = NULL;
++        }
+     }
+ 
+     drm_modeset_unlock_all(dev);
+diff -ur NVIDIA-Linux-x86_64-375.39/kernel/nvidia-drm/nvidia-drm-priv.h 375.39-pax/kernel/nvidia-drm/nvidia-drm-priv.h
+--- NVIDIA-Linux-x86_64-375.39/kernel/nvidia-drm/nvidia-drm-priv.h	2017-02-01 05:47:52.000000000 +0300
++++ 375.39-pax/kernel/nvidia-drm/nvidia-drm-priv.h	2017-03-23 16:01:29.819217827 +0300
+@@ -23,8 +23,11 @@
+ #ifndef __NVIDIA_DRM_PRIV_H__
+ #define __NVIDIA_DRM_PRIV_H__
+ 
++#include <linux/version.h>
+ #include "conftest.h" /* NV_DRM_AVAILABLE */
+ 
++
++
+ #if defined(NV_DRM_AVAILABLE)
+ 
+ #include <drm/drmP.h>
+@@ -34,7 +37,11 @@
+ #endif
+ 
+ #if defined(NV_DRM_DRIVER_HAS_GEM_PRIME_RES_OBJ)
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
++#include <linux/dma-fence.h>
++#else
+ #include <linux/fence.h>
++#endif
+ #include <linux/reservation.h>
+ #endif
+ 
+diff -ur NVIDIA-Linux-x86_64-375.39/kernel/nvidia-modeset/nvidia-modeset-linux.c 375.39-pax/kernel/nvidia-modeset/nvidia-modeset-linux.c
+--- NVIDIA-Linux-x86_64-375.39/kernel/nvidia-modeset/nvidia-modeset-linux.c	2017-02-01 05:47:52.000000000 +0300
++++ 375.39-pax/kernel/nvidia-modeset/nvidia-modeset-linux.c	2017-03-23 15:54:38.660562585 +0300
+@@ -335,29 +335,28 @@
+  * Interface with resman.
+  *************************************************************************/
+ 
+-static nvidia_modeset_rm_ops_t __rm_ops = { 0 };
++static const nvidia_modeset_rm_ops_t *__rm_ops;
+ static nvidia_modeset_callbacks_t nvkms_rm_callbacks = {
+-    nvkms_suspend,
+-    nvkms_resume
++    .suspend = nvkms_suspend,
++    .resume = nvkms_resume
+ };
+
+ static int nvkms_alloc_rm(void)
+ {
+     NV_STATUS nvstatus;
+     int ret;
++    const char *version_string = NV_VERSION_STRING;
+
+-    __rm_ops.version_string = NV_VERSION_STRING;
+-
+-    nvstatus = nvidia_get_rm_ops(&__rm_ops);
++    nvstatus = nvidia_get_rm_ops(&__rm_ops, &version_string);
+
+     if (nvstatus != NV_OK) {
+         printk(KERN_ERR NVKMS_LOG_PREFIX "Version mismatch: "
+                "nvidia.ko(%s) nvidia-modeset.ko(%s)\n",
+-               __rm_ops.version_string, NV_VERSION_STRING);
++               version_string, NV_VERSION_STRING);
+         return -EINVAL;
+     }
+
+-    ret = __rm_ops.set_callbacks(&nvkms_rm_callbacks);
++    ret = __rm_ops->set_callbacks(&nvkms_rm_callbacks);
+     if (ret < 0) {
+         printk(KERN_ERR NVKMS_LOG_PREFIX "Failed to register callbacks\n");
+         return ret;
+@@ -368,20 +367,20 @@
+
+ static void nvkms_free_rm(void)
+ {
+-    __rm_ops.set_callbacks(NULL);
++    __rm_ops->set_callbacks(NULL);
+ }
+ 
+ void NVKMS_API_CALL nvkms_call_rm(void *ops)
+ {
+     nvidia_modeset_stack_ptr stack = NULL;
+ 
+-    if (__rm_ops.alloc_stack(&stack) != 0) {
++    if (__rm_ops->alloc_stack(&stack) != 0) {
+         return;
+     }
+ 
+-    __rm_ops.op(stack, ops);
++    __rm_ops->op(stack, ops);
+ 
+-    __rm_ops.free_stack(stack);
++    __rm_ops->free_stack(stack);
+ }
+ 
+ /*************************************************************************
+@@ -705,13 +704,13 @@
+     nvidia_modeset_stack_ptr stack = NULL;
+     NvBool ret;
+ 
+-    if (__rm_ops.alloc_stack(&stack) != 0) {
++    if (__rm_ops->alloc_stack(&stack) != 0) {
+         return NV_FALSE;
+     }
+ 
+-    ret = __rm_ops.open_gpu(gpuId, stack) == 0;
++    ret = __rm_ops->open_gpu(gpuId, stack) == 0;
+ 
+-    __rm_ops.free_stack(stack);
++    __rm_ops->free_stack(stack);
+ 
+     return ret;
+ }
+@@ -720,23 +719,23 @@
+ {
+     nvidia_modeset_stack_ptr stack = NULL;
+ 
+-    if (__rm_ops.alloc_stack(&stack) != 0) {
++    if (__rm_ops->alloc_stack(&stack) != 0) {
+         return;
+     }
+ 
+-    __rm_ops.close_gpu(gpuId, stack);
++    __rm_ops->close_gpu(gpuId, stack);
+ 
+-    __rm_ops.free_stack(stack);
++    __rm_ops->free_stack(stack);
+ }
+ 
+ NvU32 NVKMS_API_CALL nvkms_enumerate_gpus(nv_gpu_info_t *gpu_info)
+ {
+-    return __rm_ops.enumerate_gpus(gpu_info);
++    return __rm_ops->enumerate_gpus(gpu_info);
+ }
+ 
+ NvBool NVKMS_API_CALL nvkms_allow_write_combining(void)
+ {
+-    return __rm_ops.system_info.allow_write_combining;
++    return __rm_ops->system_info.allow_write_combining;
+ }
+ 
+ /*************************************************************************
+@@ -1285,7 +1284,7 @@
+ module_exit(nvkms_exit);
+ 
+ #if defined(MODULE_LICENSE)
+-  MODULE_LICENSE("NVIDIA");
++  MODULE_LICENSE("GPLv2");
+ #endif
+ #if defined(MODULE_INFO)
+   MODULE_INFO(supported, "external");
+diff -ur NVIDIA-Linux-x86_64-375.39/kernel/nvidia-uvm/uvm8.c 375.39-pax/kernel/nvidia-uvm/uvm8.c
+--- NVIDIA-Linux-x86_64-375.39/kernel/nvidia-uvm/uvm8.c	2017-02-01 05:50:33.000000000 +0300
++++ 375.39-pax/kernel/nvidia-uvm/uvm8.c	2017-03-23 05:44:04.000000000 +0300
+@@ -99,9 +99,18 @@
+ // If a fault handler is not set, paths like handle_pte_fault in older kernels
+ // assume the memory is anonymous. That would make debugging this failure harder
+ // so we force it to fail instead.
++
++#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 11, 0)
+ static int uvm_vm_fault_sigbus(struct vm_area_struct *vma, struct vm_fault *vmf)
+-{
+-    UVM_DBG_PRINT_RL("Fault to address 0x%lx in disabled vma\n", nv_page_fault_va(vmf));
++#else
++static int uvm_vm_fault_sigbus(struct vm_fault *vmf)
++#endif
++{
++#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 9, 0)
++    UVM_DBG_PRINT_RL("Fault to address 0x%p in disabled vma\n", vmf->virtual_address);
++#else
++    UVM_DBG_PRINT_RL("Fault to address 0x%p in disabled vma\n", vmf->address);
++#endif
+     vmf->page = NULL;
+     return VM_FAULT_SIGBUS;
+ }
+@@ -315,7 +324,12 @@
+ {
+     uvm_va_space_t *va_space = uvm_va_space_get(vma->vm_file);
+     uvm_va_block_t *va_block;
+-    NvU64 fault_addr = nv_page_fault_va(vmf);
++
++#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 9, 0)
++    NvU64 fault_addr = (NvU64)(uintptr_t)vmf->virtual_address;
++#else
++    NvU64 fault_addr = (NvU64)(uintptr_t)vmf->address;
++#endif
+     bool is_write = vmf->flags & FAULT_FLAG_WRITE;
+     NV_STATUS status = uvm_global_get_status();
+     bool tools_enabled;
+diff -ur NVIDIA-Linux-x86_64-375.39/kernel/nvidia-uvm/uvm8_channel.c 375.39-pax/kernel/nvidia-uvm/uvm8_channel.c
+--- NVIDIA-Linux-x86_64-375.39/kernel/nvidia-uvm/uvm8_channel.c	2017-02-01 05:50:33.000000000 +0300
++++ 375.39-pax/kernel/nvidia-uvm/uvm8_channel.c	2017-03-23 05:44:04.000000000 +0300
+@@ -291,14 +291,10 @@
+     channel->cpu_put = new_cpu_put;
+     gpu->host_hal->write_gpu_put(channel, new_cpu_put);
+ 
+-    uvm_pushbuffer_end_push(pushbuffer, push, entry);
+-
+-    // The moment the channel is unlocked uvm_channel_update_progress_with_max()
+-    // may notice the GPU work to be completed and hence all state tracking the
+-    // push must be updated before that. Notably uvm_pushbuffer_end_push() has
+-    // to be called first.
+     uvm_spin_unlock(&channel->pool->lock);
+ 
++    uvm_pushbuffer_end_push(pushbuffer, push, entry);
++
+     // This is borrowed from CUDA as it supposedly fixes perf issues on some systems,
+     // comment from CUDA:
+     // This fixes throughput-related performance problems, e.g. bugs 626179, 593841
+diff -ur NVIDIA-Linux-x86_64-375.39/kernel/nvidia-uvm/uvm8_global.c 375.39-pax/kernel/nvidia-uvm/uvm8_global.c
+--- NVIDIA-Linux-x86_64-375.39/kernel/nvidia-uvm/uvm8_global.c	2017-02-01 05:50:33.000000000 +0300
++++ 375.39-pax/kernel/nvidia-uvm/uvm8_global.c	2017-03-23 15:54:38.660562585 +0300
+@@ -35,17 +35,17 @@
+ #include "nv_uvm_interface.h"
+ 
+ uvm_global_t g_uvm_global;
+-static struct UvmOpsUvmEvents g_exported_uvm8_ops;
++static struct UvmOpsUvmEvents g_exported_uvm8_ops = {
++    .startDevice = NULL,
++    .stopDevice  = NULL,
++    .isrTopHalf  = uvm8_isr_top_half,
++};
+ static bool g_ops_registered = false;
+ 
+ static NV_STATUS uvm8_register_callbacks(void)
+ {
+     NV_STATUS status = NV_OK;
+ 
+-    g_exported_uvm8_ops.startDevice = NULL;
+-    g_exported_uvm8_ops.stopDevice  = NULL;
+-    g_exported_uvm8_ops.isrTopHalf  = uvm8_isr_top_half;
+-
+     // Register the UVM callbacks with the main GPU driver:
+     status = uvm_rm_locked_call(nvUvmInterfaceRegisterUvmCallbacks(&g_exported_uvm8_ops));
+     if (status != NV_OK)
+diff -ur NVIDIA-Linux-x86_64-375.39/kernel/nvidia-uvm/uvm8_gpu_semaphore.c 375.39-pax/kernel/nvidia-uvm/uvm8_gpu_semaphore.c
+--- NVIDIA-Linux-x86_64-375.39/kernel/nvidia-uvm/uvm8_gpu_semaphore.c	2017-02-01 05:50:33.000000000 +0300
++++ 375.39-pax/kernel/nvidia-uvm/uvm8_gpu_semaphore.c	2017-03-23 15:54:38.661562305 +0300
+@@ -368,7 +368,7 @@
+     // being optimized out on non-SMP configs (we need them for interacting with
+     // the GPU correctly even on non-SMP).
+     mb();
+-    ACCESS_ONCE(*semaphore->payload) = payload;
++    ACCESS_ONCE_RW(*semaphore->payload) = payload;
+ }
+ 
+ // This function is intended to catch channels which have been left dangling in
+diff -ur NVIDIA-Linux-x86_64-375.39/kernel/nvidia-uvm/uvm8_hal.h 375.39-pax/kernel/nvidia-uvm/uvm8_hal.h
+--- NVIDIA-Linux-x86_64-375.39/kernel/nvidia-uvm/uvm8_hal.h	2017-02-01 05:50:33.000000000 +0300
++++ 375.39-pax/kernel/nvidia-uvm/uvm8_hal.h	2017-03-23 15:54:38.661562305 +0300
+@@ -316,7 +316,7 @@
+         // fault_buffer_ops: id is a hardware class
+         uvm_fault_buffer_hal_t fault_buffer_ops;
+     } u;
+-} uvm_hal_class_ops_t;
++} __do_const uvm_hal_class_ops_t;
+ 
+ // When UVM next support is enabled support for future chips in the hal is
+ // enabled by providing additional hal table entries below.
+diff -ur NVIDIA-Linux-x86_64-375.39/kernel/nvidia-uvm/uvm8_mmu.h 375.39-pax/kernel/nvidia-uvm/uvm8_mmu.h
+--- NVIDIA-Linux-x86_64-375.39/kernel/nvidia-uvm/uvm8_mmu.h	2017-02-01 05:50:33.000000000 +0300
++++ 375.39-pax/kernel/nvidia-uvm/uvm8_mmu.h	2017-03-23 15:54:38.662562025 +0300
+@@ -24,7 +24,6 @@
+ #ifndef __UVM8_MMU_H__
+ #define __UVM8_MMU_H__
+ 
+-#include "uvm8_forward_decl.h"
+ #include "uvm8_hal_types.h"
+ #include "uvm8_pmm_gpu.h"
+ #include "uvmtypes.h"
+diff -ur NVIDIA-Linux-x86_64-375.39/kernel/nvidia-uvm/uvm_common.c 375.39-pax/kernel/nvidia-uvm/uvm_common.c
+--- NVIDIA-Linux-x86_64-375.39/kernel/nvidia-uvm/uvm_common.c	2017-02-01 05:50:33.000000000 +0300
++++ 375.39-pax/kernel/nvidia-uvm/uvm_common.c	2017-03-23 15:54:38.662562025 +0300
+@@ -40,7 +40,6 @@
+ #define UVM_SPIN_LOOP_PRINT_TIMEOUT_SEC     30ULL
+ 
+ static dev_t g_uvmBaseDev;
+-struct UvmOpsUvmEvents g_exportedUvmOps;
+ 
+ static char* uvm_driver_mode = "8";
+ 
+@@ -388,5 +387,5 @@
+ MODULE_PARM_DESC(uvm_enable_builtin_tests,
+                  "Enable the UVM built-in tests. (This is a security risk)");
+ 
+-MODULE_LICENSE("MIT");
++MODULE_LICENSE("GPLv2");
+ MODULE_INFO(supported, "external");
+diff -ur NVIDIA-Linux-x86_64-375.39/kernel/nvidia-uvm/uvm_full_fault_buffer.h 375.39-pax/kernel/nvidia-uvm/uvm_full_fault_buffer.h
+--- NVIDIA-Linux-x86_64-375.39/kernel/nvidia-uvm/uvm_full_fault_buffer.h	2017-02-01 05:50:33.000000000 +0300
++++ 375.39-pax/kernel/nvidia-uvm/uvm_full_fault_buffer.h	2017-03-23 15:54:38.663561746 +0300
+@@ -31,6 +31,7 @@
+ #define _UVM_FULL_FAULT_BUFFER_H_
+ 
+ #include "uvmtypes.h"
++#include "linux/compiler.h"
+ 
+ #define MAXWELL_FAULT_BUFFER_A (0xb069)
+ #define MEM_RD32(a) (*(const volatile NvU32 *)(a)) 
+@@ -303,7 +304,7 @@
+     NvUvmControlPrefetch_t              controlPrefetch;
+     NvUvmTestFaultBufferOverflow_t      testFaultBufferOverflow;
+     NvUvmClearFaultBufferOverflow_t     clearFaultBufferOverflow;
+-} UvmFaultBufferOps;
++} __no_const UvmFaultBufferOps;
+ 
+ /******************************************************************************
+     uvmfull_fault_buffer_init
+diff -ur NVIDIA-Linux-x86_64-375.39/kernel/nvidia-uvm/uvm_linux.h 375.39-pax/kernel/nvidia-uvm/uvm_linux.h
+--- NVIDIA-Linux-x86_64-375.39/kernel/nvidia-uvm/uvm_linux.h	2017-02-01 05:50:33.000000000 +0300
++++ 375.39-pax/kernel/nvidia-uvm/uvm_linux.h	2017-03-23 15:54:38.663561746 +0300
+@@ -434,7 +434,7 @@
+ 
+ // WRITE_ONCE/READ_ONCE have incompatible definitions across versions, which produces warnings.
+ // Therefore, we define our own macros
+-#define UVM_WRITE_ONCE(x, val) (ACCESS_ONCE(x) = (val))
++#define UVM_WRITE_ONCE(x, val) (ACCESS_ONCE_RW(x) = (val))
+ #define UVM_READ_ONCE(x) ACCESS_ONCE(x)
+ 
+ // Added in 3.11
+diff -ur NVIDIA-Linux-x86_64-375.39/kernel/nvidia-uvm/uvm_unsupported.c 375.39-pax/kernel/nvidia-uvm/uvm_unsupported.c
+--- NVIDIA-Linux-x86_64-375.39/kernel/nvidia-uvm/uvm_unsupported.c	2017-02-01 05:50:33.000000000 +0300
++++ 375.39-pax/kernel/nvidia-uvm/uvm_unsupported.c	2017-03-23 05:43:38.000000000 +0300
+@@ -171,6 +171,6 @@
+ module_init(uvm_unsupported_module_init);
+ module_exit(uvm_unsupported_exit);
+ 
+-MODULE_LICENSE("MIT");
++MODULE_LICENSE("GPLv2");
+ MODULE_INFO(supported, "external");
+ 
